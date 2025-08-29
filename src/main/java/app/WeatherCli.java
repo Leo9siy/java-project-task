@@ -8,7 +8,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.time.LocalDate;
 import java.util.*;
 
 public class WeatherCli {
@@ -16,8 +15,7 @@ public class WeatherCli {
     private static final String[] CITIES = {"Chisinau", "Madrid", "Kyiv", "Amsterdam"};
 
     record ForecastRow(
-    		String city, String date, double minC, double maxC,
-    		double avgHumidity, double maxWindKph, String windDir
+    		String city, Map<String, String> weatherData
     ) {}
 
     public static void main(String[] args) throws Exception {
@@ -27,40 +25,43 @@ public class WeatherCli {
             System.exit(1);
         }
 
-        HttpClient http = HttpClient.newHttpClient();
-        ObjectMapper om = new ObjectMapper();
+        HttpClient httpClient = HttpClient.newHttpClient();
+        ObjectMapper objectMapper = new ObjectMapper();
 
-        List<ForecastRow> rows = new ArrayList<>();
-        String tomorrowDate = null;
+        List<ForecastRow> rows = new ArrayList<ForecastRow>();
+        Set<String> dates = new HashSet<String>();
 
         for (String city : CITIES) {
             String url = manager.buildUrl(key, city);
             
-            JsonNode root = fetch(http, url, om);
+            JsonNode root = fetch(httpClient, url, objectMapper);
 
             JsonNode forecastDays = root.path("forecast").path("forecastday");
             if (!forecastDays.isArray() || forecastDays.size() == 0) {
                 throw new RuntimeException("No forecast data for " + city);
             }
-
-            JsonNode tomorrowNode = forecastDays.size() > 1 ? forecastDays.get(1) : forecastDays.get(0);
             
-            String date = tomorrowNode.path("date").asText();
+            HashMap<String, String> weatherData = new HashMap<String, String>();
+            
+            for (JsonNode dayNode : forecastDays) {
+            	String date = dayNode.path("date").asText();
+            	dates.add(date);
+            	JsonNode day = dayNode.path("day");
+                double minC = day.path("mintemp_c").asDouble();
+                double maxC = day.path("maxtemp_c").asDouble();
+                double avgHumidity = day.path("avghumidity").asDouble();
+                double maxWindKph = day.path("maxwind_kph").asDouble();
 
-            JsonNode day = tomorrowNode.path("day");
-            double minC = day.path("mintemp_c").asDouble();
-            double maxC = day.path("maxtemp_c").asDouble();
-            double avgHumidity = day.path("avghumidity").asDouble();
-            double maxWindKph = day.path("maxwind_kph").asDouble();
-
-
-            String windDir = computePredominantWindDir(tomorrowNode.path("hour"));
-
-            rows.add(new ForecastRow(city, date, minC, maxC, avgHumidity, maxWindKph, windDir));
-            if (tomorrowDate == null) tomorrowDate = date;
+                String windDir = computePredominantWindDir(dayNode.path("hour"));
+                
+                String weather = String.format("min %.1f / max %.1f °C | hum %.0f%% | wind %.1f kph %s",
+                        minC, maxC, avgHumidity, maxWindKph, windDir);
+                weatherData.put(date, weather);
+            }
+            rows.add(new ForecastRow(city, weatherData));
         }
 
-        printTable(rows, tomorrowDate);
+        printTable(rows, dates);
     }
 
     private static JsonNode fetch(HttpClient http, String url, ObjectMapper om) throws IOException, InterruptedException {
@@ -96,19 +97,24 @@ public class WeatherCli {
         return dirs[idx % 16];
     }
 
-    private static void printTable(List<ForecastRow> rows, String date) {
-        String dateCol = (date != null) ? date : LocalDate.now().plusDays(1).toString();
-        String header = String.format("%-12s | %-40s", "City", dateCol);
+    private static void printTable(List<ForecastRow> rows, Set<String> dates) {
+        String header = String.format("%-10s", "City");
+        for (String date : dates) {
+            header += String.format(" | %-50s", date);
+        }
         String sep = "-".repeat(header.length());
         System.out.println(header);
         System.out.println(sep);
 
         rows.stream()
             .sorted(Comparator.comparing(ForecastRow::city))
-            .forEach(r -> {
-                String cell = String.format("min %.1f / max %.1f °C | hum %.0f%% | wind %.1f kph %s",
-                        r.minC, r.maxC, r.avgHumidity, r.maxWindKph, r.windDir);
-                System.out.printf("%-12s | %-40s%n", r.city, cell);
+            .forEach(row -> {
+                var rowData = String.format("%-10s", row.city);
+                for (String date : dates) {
+                    var weather = row.weatherData.getOrDefault(date, "No data");
+                    rowData += String.format(" | %-20s", weather);
+                }
+                System.out.println(rowData);
             });
     }
 }
